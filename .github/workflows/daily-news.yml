@@ -1,0 +1,75 @@
+name: Daily news
+
+# Regenerates the small over-the-air articles slice (~74 KB) that the CantoReader
+# app fetches on launch, and commits it straight into THIS repo.
+#
+# Why it lives here rather than in the app repo: this repo is PUBLIC, so GitHub
+# Actions minutes are free and unmetered — the app repo is private, where they
+# are billed. Running here also means the publish step pushes to its own repo
+# using the automatic GITHUB_TOKEN, so no cross-repo write PAT is needed.
+#
+# Requires two repo secrets on THIS repo:
+#   ANTHROPIC_API_KEY  — Claude API key for the graded rewrites
+#   APP_REPO_TOKEN     — a fine-grained PAT with contents:READ on
+#                        Hon-Luu/cantoreader-app (the private repo holding
+#                        build_reader.py and the linguistic pipeline)
+#
+# The static character/word data is NOT touched here; it ships bundled in the
+# app and only changes on a rebuild.
+
+on:
+  schedule:
+    - cron: "0 22 * * *"      # 06:00 HKT (22:00 UTC previous day)
+  workflow_dispatch:           # allow a manual run from the Actions tab
+
+concurrency:
+  group: daily-news
+  cancel-in-progress: false
+
+permissions:
+  contents: write              # commit articles.json back into this repo
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    steps:
+      # This repo first: actions/checkout cleans the workspace root, so the
+      # app checkout below must come after or it would be wiped.
+      - name: Check out this data repo
+        uses: actions/checkout@v4
+
+      - name: Check out the app repo (private, read-only)
+        uses: actions/checkout@v4
+        with:
+          repository: Hon-Luu/cantoreader-app
+          token: ${{ secrets.APP_REPO_TOKEN }}
+          path: app
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Generate the articles slice
+        env:
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+        working-directory: app
+        run: |
+          python3 build_reader.py --daily --articles-out articles.json
+          test -s articles.json
+          python3 -c "import json; d=json.load(open('articles.json')); assert d['articles'], 'empty'; print(len(d['articles']), 'articles', d['generated_at'])"
+
+      - name: Commit the slice
+        run: |
+          set -euo pipefail
+          cp app/articles.json articles.json
+          if git diff --quiet -- articles.json; then
+            echo "No change in articles.json — nothing to publish."
+          else
+            git config user.name "cantoreader-bot"
+            git config user.email "actions@users.noreply.github.com"
+            git add articles.json
+            git commit -m "Daily articles $(date -u +%F)"
+            git push
+            echo "Published updated articles.json."
+          fi
