@@ -24,6 +24,12 @@ on:
     # RTHK mid-graveyard-shift and served heat advisories and burst water
     # mains as the day's two stories.
     - cron: "30 13 * * *"
+    # Safety net ~2h later. GitHub silently dropped the 08-06 run
+    # ("job was not acquired by Runner") and the day had no news.
+    # Re-runs are free — build_reader seeds the rewrite cache from
+    # the committed archive — so a duplicate attempt costs nothing
+    # and exits early when articles.json is unchanged.
+    - cron: "30 15 * * *"
   workflow_dispatch:           # allow a manual run from the Actions tab
 
 concurrency:
