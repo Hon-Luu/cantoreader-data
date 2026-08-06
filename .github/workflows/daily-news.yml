@@ -79,13 +79,31 @@ jobs:
           set -euo pipefail
           cp app/articles.json articles.json
           cp app/data/news_archive.json news_archive.json
-          if git diff --quiet -- articles.json news_archive.json; then
-            echo "No change — nothing to publish."
-          else
-            git config user.name "cantoreader-bot"
-            git config user.email "actions@users.noreply.github.com"
+          rm -rf app
+          git config user.name "cantoreader-bot"
+          git config user.email "actions@users.noreply.github.com"
+          # Generation takes minutes, and main can move underneath us in that
+          # window (a code push, or the safety-net run) — which rejected the
+          # push and lost a whole day's generated articles on 2026-08-06.
+          # Rebase our data on top of whatever landed, and retry.
+          published=0
+          for attempt in 1 2 3; do
+            git fetch --depth=1 origin main
+            git reset --mixed FETCH_HEAD          # keep our files, move HEAD
             git add articles.json news_archive.json
+            if git diff --cached --quiet; then
+              echo "No change — nothing to publish."
+              published=1
+              break
+            fi
             git commit -m "Daily articles $(date -u +%F)"
-            git push
-            echo "Published updated articles.json."
-          fi
+            if git push origin HEAD:main; then
+              echo "Published updated articles.json."
+              published=1
+              break
+            fi
+            echo "Push rejected (main moved) — retrying, attempt $attempt."
+            git reset --soft HEAD~1
+            sleep 5
+          done
+          [ "$published" = "1" ]
