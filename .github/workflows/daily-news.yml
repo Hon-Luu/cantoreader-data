@@ -70,7 +70,9 @@ jobs:
           # 14-day window would reset to just tonight's two stories.
           mkdir -p data
           cp ../news_archive.json data/news_archive.json 2>/dev/null || true
-          python3 build_reader.py --daily --articles-out articles.json
+          # Sonnet for the daily rewrites: ~1/5 the price of Opus, and the
+          # graded-ladder output validated cleanly (smoke-tested 2026-08-09).
+          python3 build_reader.py --daily --model claude-sonnet-5 --articles-out articles.json
           test -s articles.json
           python3 -c "import json; d=json.load(open('articles.json')); assert d['articles'], 'empty'; print(len(d['articles']), 'articles', d['generated_at'])"
 
