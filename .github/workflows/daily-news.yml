@@ -25,10 +25,11 @@ on:
     # mains as the day's two stories.
     - cron: "30 13 * * *"
     # Safety net ~2h later. GitHub silently dropped the 08-06 run
-    # ("job was not acquired by Runner") and the day had no news.
-    # Re-runs are free — build_reader seeds the rewrite cache from
-    # the committed archive — so a duplicate attempt costs nothing
-    # and exits early when articles.json is unchanged.
+    # ("job was not acquired by Runner") and the day had no news. The
+    # retry exists for DROPPED runs only: once today's slice is already
+    # committed it exits early (see the guard below) instead of re-billing
+    # a second rewrite for a possibly-different front-page pick — which is
+    # exactly what happened twice on 2026-08-10.
     - cron: "30 15 * * *"
   workflow_dispatch:           # allow a manual run from the Actions tab
 
@@ -61,10 +62,23 @@ jobs:
           python-version: "3.12"
 
       - name: Generate the articles slice
+        id: gen
         env:
           ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
         working-directory: app
         run: |
+          echo "publish=false" >> "$GITHUB_OUTPUT"
+          # Safety-net skip: if today's slice is already on main, the 23:30
+          # retry has nothing to rescue. Scheduled runs only — a manual
+          # dispatch should always regenerate. Best-effort under the shallow
+          # checkout (if HEAD isn't an articles commit the date reads empty
+          # and we just fall through to a regenerate; the "No change" branch
+          # of the commit step keeps that harmless).
+          if [ "${{ github.event_name }}" = "schedule" ] &&
+             [ "$(git -C .. log -1 --format=%cs -- articles.json)" = "$(date -u +%F)" ]; then
+            echo "Already published today — safety-net run not needed."
+            exit 0
+          fi
           # Seed the rolling news archive from the last published run. Each
           # night starts from a fresh checkout, so without this hand-off the
           # 14-day window would reset to just tonight's two stories.
@@ -73,10 +87,21 @@ jobs:
           # Sonnet for the daily rewrites: ~1/5 the price of Opus, and the
           # graded-ladder output validated cleanly (smoke-tested 2026-08-09).
           python3 build_reader.py --daily --model claude-sonnet-5 --articles-out articles.json
-          test -s articles.json
+          # Off days (Tue/Thu/Sat/Sun) generate nothing BY DESIGN — build_reader
+          # exits clean without writing articles.json, and that must end the
+          # job green with no commit. (An unconditional `test -s` here failed
+          # every off-day run 2026-08-09→08-11 and mailed failures for a
+          # working schedule.) A severe-weather override still publishes on
+          # any day — build_reader decides, so the fetch above always runs.
+          if [ ! -s articles.json ]; then
+            echo "Off day — nothing generated, nothing to publish."
+            exit 0
+          fi
           python3 -c "import json; d=json.load(open('articles.json')); assert d['articles'], 'empty'; print(len(d['articles']), 'articles', d['generated_at'])"
+          echo "publish=true" >> "$GITHUB_OUTPUT"
 
       - name: Commit the slice
+        if: steps.gen.outputs.publish == 'true'
         run: |
           set -euo pipefail
           cp app/articles.json articles.json
